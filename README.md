@@ -19,3 +19,7 @@ Exemplo de requisição GET no postman com o CEP do Marco Zero de Recife:
 http://localhost:7070/locais?cep=50030-310
 
 Esta requisição retornará as delegacias mais próximas ao CEP informado
+
+Exemplo dessa requisição:
+
+![Captura de tela 2024-09-07 103603](https://github.com/user-attachments/assets/0f9c72b2-ffb3-4186-8d47-b9c3f6028a04)
