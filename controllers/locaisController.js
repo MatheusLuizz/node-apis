@@ -1,20 +1,14 @@
 const axios = require('axios');
-const NodeGeocoder = require('node-geocoder');
+const cache = require('memory-cache');
 require('dotenv').config();
 
 const googleKey = process.env.GOOGLE_KEY;
-
-const geocoder = NodeGeocoder({
-  provider: 'google',
-  apiKey: googleKey,
-});
-
 const googlePlacesApiKey = googleKey;
 
-// Aqui eu estou calculando a distância entre dois pontos (CEP informado e o local encontrado) para retornar no JSON dps
+// Função para calcular a distância entre dois pontos
 const calcularDistancia = (lat1, lon1, lat2, lon2) => {
   const R = 6371e3; // Raio da Terra em metros
-  const φ1 = (lat1 * Math.PI) / 180; // φ, λ em radianos
+  const φ1 = (lat1 * Math.PI) / 180;
   const φ2 = (lat2 * Math.PI) / 180;
   const Δφ = ((lat2 - lat1) * Math.PI) / 180;
   const Δλ = ((lon2 - lon1) * Math.PI) / 180;
@@ -29,12 +23,13 @@ const calcularDistancia = (lat1, lon1, lat2, lon2) => {
   return distancia;
 };
 
+// Função para buscar locais próximos usando a API do Google Places
 const searchNearbyPlaces = async (latitude, longitude, keyword, radius) => {
   const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json`;
   const params = {
     location: `${latitude},${longitude}`,
-    radius, // Raio de busca em metros (ele tá calculando +1, então colocar 15km, busca 16km ignorando float, então vai até 16,900)
-    keyword, // Palavra-chave para busca, pode ser alterada mais abaixo, a idéia é mudar conforme solicitção do usuário no front
+    radius, // Raio de busca em metros
+    keyword, // Palavra-chave para busca
     key: googlePlacesApiKey,
   };
 
@@ -48,59 +43,58 @@ const searchNearbyPlaces = async (latitude, longitude, keyword, radius) => {
 };
 
 exports.getNearbyPlaces = async (req, res) => {
-  const { cep } = req.query;
+  const { latitude, longitude, keyword = 'delegacia da mulher', radius = 15000 } = req.query;
 
-  if (!cep) {
-    return res.status(400).json({ error: 'CEP não fornecido' });
+  // Validação dos parâmetros
+  if (!latitude || !longitude) {
+    return res.status(400).json({ error: 'Latitude e longitude não fornecidas' });
+  }
+
+  const latNum = parseFloat(latitude);
+  const lonNum = parseFloat(longitude);
+
+  if (isNaN(latNum) || isNaN(lonNum)) {
+    return res.status(400).json({ error: 'Latitude e longitude inválidas' });
+  }
+
+  // Chave de cache baseada nos parâmetros da requisição
+  const cacheKey = `${latNum}-${lonNum}-${keyword}-${radius}`;
+  const cachedData = cache.get(cacheKey);
+
+  // Se os dados já estiverem em cache, retorne imediatamente
+  if (cachedData) {
+    console.log('Retornando dados do cache:', cachedData);
+    return res.json(cachedData);
   }
 
   try {
-    const response = await axios.get(`https://viacep.com.br/ws/${cep}/json/`);
-    const endereco = response.data;
+    const locais = await searchNearbyPlaces(latNum, lonNum, keyword, radius);
 
-    if (endereco.erro) {
-      return res.status(404).json({ error: 'CEP não encontrado' });
-    }
-
-    const enderecoCompleto = `${endereco.logradouro}, ${endereco.bairro}, ${endereco.localidade}, ${endereco.uf}`;
-
-    const resultadoGeocodificacao = await geocoder.geocode(enderecoCompleto);
-
-    if (resultadoGeocodificacao.length === 0) {
-      return res.status(404).json({ error: 'Coordenadas não encontradas' });
-    }
-
-    const coordenadas = resultadoGeocodificacao[0];
-    const latitude = coordenadas.latitude;
-    const longitude = coordenadas.longitude;
-
-    const keyword = 'delegacia da mulher';
-    const radius = 15000;
-    const locais = await searchNearbyPlaces(latitude, longitude, keyword, radius);
-
-    // Verifica se nenhum local foi encontrado
     if (locais.length === 0) {
-      return res.status(200).json({ message: 'Não há locais próximos ao seu endereço' });
+      return res.status(200).json({ message: 'Não há locais próximos à sua localização' });
     }
 
     const locaisComDistanciaELink = locais.map(local => {
       const localLatitude = local.geometry.location.lat;
       const localLongitude = local.geometry.location.lng;
 
-      const distancia = calcularDistancia(latitude, longitude, localLatitude, localLongitude);
+      const distancia = calcularDistancia(latNum, lonNum, localLatitude, localLongitude);
 
       const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${localLatitude},${localLongitude}`;
 
       return {
         ...local,
-        distance: distancia.toFixed(2), // Distância dos dois pontos com duas casas decimais adicionadas no fim do JSON
-        googleMapsUrl, // Adiciona o link do Google Maps para o endereço encontrado no JSON
+        distance: (distancia / 1000).toFixed(2),
+        googleMapsUrl,
       };
     });
 
+    // Armazena a resposta no cache por 1 minuto (60.000 ms)
+    cache.put(cacheKey, locaisComDistanciaELink, 60 * 1000); 
+
     res.json(locaisComDistanciaELink);
   } catch (error) {
-    console.error('Erro ao buscar dados do CEP ou coordenadas:', error.message);
-    res.status(500).json({ error: 'Erro ao buscar dados do CEP ou coordenadas' });
+    console.error('Erro ao buscar locais:', error.message);
+    res.status(500).json({ error: 'Erro ao buscar locais' });
   }
 };
